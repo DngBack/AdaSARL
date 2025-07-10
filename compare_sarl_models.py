@@ -66,7 +66,7 @@ def run_experiment(model_name, dataset, buffer_size, seed, output_dir):
         "--output_dir", output_dir,
         "--csv_log",
         "--seed", str(seed),
-        "--device", "mps",
+        "--device", "cuda",
         "--save_model", "0",
         "--save_interim", "0"
     ]
