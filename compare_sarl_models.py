@@ -99,7 +99,7 @@ def main():
     
     # Experiment configuration
     models = ["sarl", "sarl_enhanced"]
-    datasets = ["seq-cifar100"]
+    datasets = ["seq-cifar10", "seq-cifar100"]
     buffer_sizes = [200, 500]
     seeds = [1, 3, 5]
     

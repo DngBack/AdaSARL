@@ -227,8 +227,22 @@ class SARLEnhanced(ContinualModel):
         """Create positive pairs for semantic similarity training"""
         pos_pairs = []
         
+        # Use domain knowledge for CIFAR-10
+        if self.args.dataset == 'seq-cifar10':
+            # Group similar classes based on semantic categories
+            vehicle_classes = [0, 1, 8, 9]  # airplane, automobile, ship, truck
+            animal_classes = [2, 3, 4, 5, 6, 7]  # bird, cat, deer, dog, frog, horse
+            
+            # Create pairs within categories
+            for category in [vehicle_classes, animal_classes]:
+                category = [c for c in category if c in self.learned_classes]
+                for i in range(len(category)):
+                    for j in range(i+1, len(category)):
+                        if category[i] in self.op and category[j] in self.op:
+                            pos_pairs.append((self.op[category[i]], self.op[category[j]]))
+        
         # Use domain knowledge for CIFAR-100
-        if self.args.dataset == 'seq-cifar100':
+        elif self.args.dataset == 'seq-cifar100':
             # Group similar classes based on semantic categories
             animal_classes = [0, 1, 2, 3, 4, 6, 7, 8, 9, 14, 15, 16, 18, 19, 21, 22, 24, 26, 27, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99]
             vehicle_classes = [1, 8, 13, 48, 58, 81, 89, 90]
@@ -251,8 +265,19 @@ class SARLEnhanced(ContinualModel):
         if len(self.learned_classes) < 2:
             return neg_pairs
             
-        # Create pairs between different categories
-        if self.args.dataset == 'seq-cifar100':
+        # Create pairs between different categories for CIFAR-10
+        if self.args.dataset == 'seq-cifar10':
+            vehicle_classes = [0, 1, 8, 9]  # airplane, automobile, ship, truck
+            animal_classes = [2, 3, 4, 5, 6, 7]  # bird, cat, deer, dog, frog, horse
+            
+            # Create cross-category pairs
+            for vehicle in vehicle_classes:
+                for animal in animal_classes:
+                    if vehicle in self.op and animal in self.op:
+                        neg_pairs.append((self.op[vehicle], self.op[animal]))
+        
+        # Create pairs between different categories for CIFAR-100
+        elif self.args.dataset == 'seq-cifar100':
             animal_classes = [0, 2, 3, 4, 6, 7, 9, 14, 15, 16, 18, 19, 21, 22, 24, 26, 27, 29, 30, 31, 32, 33, 34, 35, 36, 38, 39, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99]
             vehicle_classes = [1, 8, 13, 48, 58, 81, 89, 90]
             
