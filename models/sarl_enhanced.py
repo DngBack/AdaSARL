@@ -161,30 +161,52 @@ class SARLEnhanced(ContinualModel):
         """Compute contrastive loss with semantic guidance"""
         loss = 0
         
-        for class_label in prototypes.keys():
-            if class_label not in semantic_weights:
-                continue
-                
+        # Only process new classes that have semantic weights
+        new_classes = [c for c in prototypes.keys() if c in semantic_weights]
+        
+        for class_label in new_classes:
             # Get prototype and semantic weights for this class
             anchor_proto = prototypes[class_label]
             sem_weights = semantic_weights[class_label]
             
             # Compute distances to all other prototypes
             distances = []
+            weights = []
+            
             for ref_class_label in prototypes.keys():
                 if class_label != ref_class_label:
                     dist = F.mse_loss(anchor_proto, prototypes[ref_class_label])
                     distances.append(dist)
+                    
+                    # Get the corresponding semantic weight for this pair
+                    if hasattr(self, 'all_labels_for_weights'):
+                        try:
+                            weight_idx = self.all_labels_for_weights.index(ref_class_label)
+                            if weight_idx < len(sem_weights):
+                                weights.append(sem_weights[weight_idx])
+                            else:
+                                weights.append(torch.tensor(0.5).to(self.device))
+                        except (ValueError, IndexError):
+                            weights.append(torch.tensor(0.5).to(self.device))
+                    else:
+                        weights.append(torch.tensor(0.5).to(self.device))
             
             if len(distances) == 0:
                 continue
                 
             distances = torch.stack(distances)
+            weights = torch.stack(weights)
+            
+            # Ensure dimensions match
+            if distances.shape[0] != weights.shape[0]:
+                print(f"Warning: Dimension mismatch for class {class_label} - distances: {distances.shape}, weights: {weights.shape}")
+                # Use uniform weights as fallback
+                weights = torch.ones_like(distances) * 0.5
             
             # Weighted contrastive loss
             # Higher semantic weight = stronger attraction
-            weighted_pos_loss = (sem_weights * distances).sum()
-            weighted_neg_loss = ((1 - sem_weights) * distances).sum()
+            weighted_pos_loss = (weights * distances).sum()
+            weighted_neg_loss = ((1 - weights) * distances).sum()
             
             if weighted_neg_loss > 0:
                 loss += weighted_pos_loss / weighted_neg_loss
@@ -343,6 +365,9 @@ class SARLEnhanced(ContinualModel):
 
             # Compute semantic weights
             semantic_weights = self.compute_semantic_weights(new_labels, all_labels)
+            
+            # Store all_labels for proper indexing in contrastive loss
+            self.all_labels_for_weights = all_labels
             
             # Apply semantic-aware contrastive loss
             l_cont = self.semantic_contrastive_loss(class_prot, semantic_weights)
