@@ -75,7 +75,7 @@ count = 0
 output_dir = "experiments/sarl"
 save_model = 0  # set to 1 to save the final model
 save_interim = 0  # set to 1 to save intermediate model state and running params
-device = 'mps'
+device = 'cuda'
 
 for seed in lst_seed:
     for buffer_size in lst_buffer_size:
