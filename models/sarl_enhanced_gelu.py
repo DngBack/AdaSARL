@@ -9,8 +9,8 @@ from copy import deepcopy
 from utils.buffer import Buffer
 from utils.args import *
 from models.utils.continual_model import ContinualModel
-from backbone.MNISTMLP import SparseMNISTMLP
-from backbone.SparseResNet18 import sparse_resnet18
+from backbone.GeluMNISTMLP import GeluMNISTMLP
+from backbone.GeluResNet18 import gelu_resnet18
 from models.utils.losses import SupConLoss
 from models.utils.pos_groups import class_dict
 
@@ -45,8 +45,18 @@ class SemanticSimilarity(nn.Module):
         return self.similarity_net(combined).squeeze(-1)
 
 
+class AdaptiveThreshold(nn.Module):
+    """Learnable threshold for semantic grouping"""
+    def __init__(self, init_threshold=0.8):
+        super().__init__()
+        self.threshold = nn.Parameter(torch.tensor(init_threshold))
+    
+    def forward(self, similarity_scores):
+        return similarity_scores > self.threshold
+
+
 def get_parser() -> ArgumentParser:
-    parser = ArgumentParser(description='Enhanced Semantic Aware Representation Learning')
+    parser = ArgumentParser(description='Enhanced Semantic Aware Representation Learning with GELU')
     add_management_args(parser)
     add_experiment_args(parser)
     add_rehearsal_args(parser)
@@ -56,11 +66,8 @@ def get_parser() -> ArgumentParser:
     parser.add_argument('--op_weight', type=float, default=0.1)
     parser.add_argument('--sm_weight', type=float, default=0.01)
     parser.add_argument('--sim_lr', type=float, default=0.001)
-    # Sparsity param
-    parser.add_argument('--apply_kw', nargs='*', type=int, default=[1, 1, 1, 1])
-    parser.add_argument('--kw', type=float, nargs='*', default=[0.9, 0.9, 0.9, 0.9])
-    parser.add_argument('--kw_relu', type=int, default=1)
-    parser.add_argument('--kw_local', type=int, default=1)
+    # GELU param
+    parser.add_argument('--apply_gelu', nargs='*', type=int, default=[1, 1, 1, 1])
     parser.add_argument('--num_feats', type=int, default=512)
     # Experimental Args
     parser.add_argument('--save_interim', type=int, default=1)
@@ -70,22 +77,21 @@ def get_parser() -> ArgumentParser:
     return parser
 
 
-class SARLEnhanced(ContinualModel):
-    NAME = 'sarl_enhanced'
+class SARLEnhancedGelu(ContinualModel):
+    NAME = 'sarl_enhanced_gelu'
     COMPATIBILITY = ['class-il', 'domain-il', 'task-il', 'general-continual']
 
     def __init__(self, backbone, loss, args, transform):
-        super(SARLEnhanced, self).__init__(backbone, loss, args, transform)
+        super(SARLEnhancedGelu, self).__init__(backbone, loss, args, transform)
         self.buffer = Buffer(self.args.buffer_size, self.device)
 
         # Initialize plastic and stable model
         if 'mnist' in self.args.dataset:
-            self.net = SparseMNISTMLP(28 * 28, 10, kw_percent_on=args.kw).to(self.device)
+            self.net = GeluMNISTMLP(28 * 28, 10).to(self.device)
         else:
-            self.net = sparse_resnet18(
+            self.net = gelu_resnet18(
                 nclasses=num_classes_dict[args.dataset],
-                kw_percent_on=args.kw, local=args.kw_local,
-                relu=args.kw_relu, apply_kw=args.apply_kw
+                apply_gelu=args.apply_gelu
             ).to(self.device)
 
         self.net_old = None
@@ -111,10 +117,12 @@ class SARLEnhanced(ContinualModel):
         self.flag = True
         self.eval_prototypes = True
         
-        # Enhanced semantic learning components (without domain knowledge)
+        # Enhanced semantic learning components
         self.semantic_similarity = SemanticSimilarity(args.num_feats).to(self.device)
+        self.adaptive_threshold = AdaptiveThreshold().to(self.device)
         self.semantic_weights = {}
         self.sim_optimizer = Adam(self.semantic_similarity.parameters(), lr=args.sim_lr)
+        self.threshold_optimizer = Adam(self.adaptive_threshold.parameters(), lr=args.sim_lr)
         
         self.class_dict = class_dict[args.dataset]
 
