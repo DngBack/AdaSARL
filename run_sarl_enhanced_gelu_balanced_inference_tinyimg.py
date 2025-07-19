@@ -20,8 +20,8 @@ import time
 import copy
 from tqdm import tqdm
 
-from datasets.seq_cifar100 import SequentialCIFAR100
-from models.sarl_enhanced_gelu_balanced import SARLEnhancedGeluBalanced, get_parser
+from datasets.seq_tinyimagenet import SequentialTinyImagenet
+from models.sarl_enhanced_gelu_balanced_inference import SARLEnhancedGeluBalancedInference, get_parser
 from utils.args import *
 from utils.best_args import *
 from utils.conf import base_path
@@ -92,80 +92,126 @@ def evaluate(model: ContinualModel, dataset: ContinualDataset, last=False) -> Tu
 
 
 def main():
-    parser = get_parser()
-    args = parser.parse_known_args()[0]
+    # Set up arguments for the new model with TinyImageNet
+    args = Namespace(
+        # Dataset
+        dataset='seq-tinyimg',
+        N_TASKS=10,
+        N_CLASSES_PER_TASK=20,
+        
+        # Model
+        model='sarl_enhanced_gelu_balanced_inference',
+        
+        # Training
+        batch_size=32,
+        minibatch_size=32,
+        n_epochs=200,
+        lr=0.1,
+        
+        # Buffer
+        buffer_size=2000,
+        
+        # SARL specific
+        alpha=0.5,
+        beta=1.0,
+        op_weight=0.1,
+        sm_weight=0.01,
+        sim_lr=0.001,
+        
+        # GELU
+        apply_gelu=[1, 1, 1, 1],
+        num_feats=512,
+        
+        # Balanced sampling
+        use_balanced_sampling=1,
+        balance_weight=1.0,
+        
+        # Prototype parameters (inference-only)
+        prototype_momentum=0.99,
+        enable_inference_guidance=1,
+        guidance_weight=0.05,
+        
+        # Experimental
+        save_interim=1,
+        warmup_epochs=5,
+        use_lr_scheduler=1,
+        lr_steps=[70, 90],
+        
+        # Logging
+        csv_log=True,
+        tensorboard=True,
+        output_dir='./outputs/sarl_enhanced_gelu_balanced_inference_tinyimg',
+        experiment_id=f'tinyimg_{datetime.now().strftime("%Y%m%d_%H%M%S")}',
+        
+        # System
+        seed=42,
+        gpu=True,
+        cuda=True,
+        device='cuda' if torch.cuda.is_available() else 'cpu',
+        
+        # Disable wandb for simplicity
+        nowand=True,
+        disable_log=False,
+        save_checkpoints=False
+    )
+
+    # Set random seeds
     if args.seed is not None:
         torch.manual_seed(args.seed)
+        np.random.seed(args.seed)
+        random.seed(args.seed)
 
-    if args.csv_log:
-        from utils.loggers import CsvLogger
-        args.csv_log = False
+    # Create output directory
+    create_if_not_exists(args.output_dir)
 
+    # Get dataset
     dataset = get_dataset(args)
     backbone = dataset.get_backbone()
     loss = dataset.get_loss()
-    model = SARLEnhancedGeluBalanced(backbone, loss, args, dataset.get_transform())
+    
+    # Create model
+    model = SARLEnhancedGeluBalancedInference(backbone, loss, args, dataset.get_transform())
     model.net.to(model.device)
 
+    # Set up logging
     if args.csv_log:
+        from utils.loggers import CsvLogger
         csv_logger = CsvLogger(dataset.SETTING, dataset.NAME, model.NAME)
+        csv_logger.log_arguments(args)
+        model.csv_logger = csv_logger
+
     if args.tensorboard:
         tb_logger = TensorboardLogger(args, dataset.SETTING, model.NAME, remove_existing_data=True)
-
-    model.writer = tb_logger.writer
-    model.csv_logger = csv_logger
-    csv_logger.log_arguments(args)
-
-    if args.csv_log:
-        csv_logger.log_arguments(args)
-    if args.tensorboard:
+        model.writer = tb_logger.writer
         tb_logger.log_arguments(args)
 
-    if args.save_checkpoints:
-        print('Creating checkpoint directory...')
-        create_if_not_exists(join(args.output_dir, "checkpoints"))
+    print(f"Starting training with model: {model.NAME}")
+    print(f"Dataset: {args.dataset}")
+    print(f"Device: {args.device}")
+    print(f"Number of tasks: {dataset.N_TASKS}")
+    print(f"Classes per task: {dataset.N_CLASSES_PER_TASK}")
 
-    if torch.cuda.is_available() and args.gpu is True:
-        print('Using CUDA')
-        args.cuda = True
-    elif torch.cuda.is_available() and not args.gpu:
-        print('WARNING: You have a CUDA device, so you should probably run with --gpu=True')
-    else:
-        args.cuda = False
-
-    if args.cuda:
-        model.cuda()
-
-    if args.tensorboard:
-        tb_logger.writer.add_text("model", str(model))
-        tb_logger.writer.add_text("backbone", str(backbone))
-        tb_logger.writer.add_text("dataset", str(dataset))
-        tb_logger.writer.add_text("args", str(args))
-
-    model.writer = tb_logger.writer
     results, results_mask_classes = [], []
 
-    if not args.disable_log:
-        logger = get_logger(args, dataset)
-        logger.info(args)
-
-    if not args.nowand:
-        assert wandb is not None
-        wandb.init(project=args.wandb_project, entity=args.wandb_entity, config=vars(args))
-        model.wandb = wandb
-
-    print(file=sys.stderr)
+    # Initialize tasks
     for t in range(dataset.N_TASKS):
         model.net.train()
         _, _ = dataset.get_data_loaders()
     if hasattr(model, 'end_task'):
         model.end_task(dataset)
 
+    # Main training loop
     for t in range(dataset.N_TASKS):
+        print(f"\n{'='*50}")
+        print(f"Training Task {t+1}/{dataset.N_TASKS}")
+        print(f"{'='*50}")
+        
         model.net.train()
         train_loader, test_loader = dataset.get_data_loaders()
+        
         if hasattr(model, 'begin_task'):
             model.begin_task(dataset)
+            
         if t:
             accs = evaluate(model, dataset, last=True)
             results[t-1] = results[t-1] + accs[0]
@@ -173,53 +219,82 @@ def main():
                 results_mask_classes[t-1] = results_mask_classes[t-1] + accs[1]
 
         scheduler = dataset.get_scheduler(model, args)
+        
+        # Training epochs
         for e in range(args.n_epochs):
             if args.tensorboard:
                 tb_logger.log_epoch(e, dataset, model)
 
             train_loss = 0
-            train_acc = 0
             train_iter = iter(train_loader)
+            
+            # Training iterations
             for i in range(len(train_loader)):
                 inputs, labels, not_aug_inputs = next(train_iter)
                 inputs, labels = inputs.to(model.device), labels.to(model.device)
                 not_aug_inputs = not_aug_inputs.to(model.device)
+                
                 loss = model.observe(inputs, labels, not_aug_inputs)
-                assert not math.isnan(loss)
+                assert not np.isnan(loss)
                 train_loss += loss
 
             if scheduler is not None:
                 scheduler.step()
 
+            # Print progress every 20 epochs
+            if (e + 1) % 20 == 0:
+                print(f"Epoch {e+1}/{args.n_epochs}, Loss: {train_loss/len(train_loader):.4f}")
+
         if hasattr(model, 'end_epoch'):
             model.end_epoch(dataset, e)
 
+        # Evaluate
         accs = evaluate(model, dataset)
         results.append(accs[0])
         results_mask_classes.append(accs[1])
 
         mean_acc = np.mean(accs[0])
-        print_mean_accuracy(mean_acc, t + 1, dataset.SETTING)
-
-        if hasattr(model, 'end_task'):
-            model.end_task(dataset)
+        print(f"\nTask {t+1} completed. Mean accuracy: {mean_acc:.2f}%")
+        
+        # Print per-task accuracies
+        print("Per-task accuracies:")
+        for i, acc in enumerate(accs[0]):
+            print(f"  Task {i+1}: {acc:.2f}%")
 
         if args.csv_log:
             csv_logger.log(mean_acc)
         if args.tensorboard:
             tb_logger.log_accuracy(np.array(accs), mean_acc, args, t)
 
+        if hasattr(model, 'end_task'):
+            model.end_task(dataset)
+
+    # Final results
+    print(f"\n{'='*50}")
+    print("TRAINING COMPLETED")
+    print(f"{'='*50}")
+    
+    final_mean_acc = np.mean(results[-1])
+    print(f"Final mean accuracy: {final_mean_acc:.2f}%")
+    
+    # Calculate forgetting
+    if len(results) > 1:
+        forgetting = []
+        for i in range(len(results) - 1):
+            forgetting.append(results[i][i] - results[-1][i])
+        avg_forgetting = np.mean(forgetting)
+        print(f"Average forgetting: {avg_forgetting:.2f}%")
+
     if args.csv_log:
         csv_logger.add_bwt(results, results_mask_classes)
         csv_logger.add_forgetting(results, results_mask_classes)
-        if model.NAME != 'icarl' and model.NAME != 'pnn':
-            csv_logger.add_fwt(results, random_results_class,
-                              results_mask_classes, random_results_task)
+        csv_logger.write(vars(args))
 
     if args.tensorboard:
         tb_logger.close()
-    if args.csv_log:
-        csv_logger.write(vars(args))
+
+    print(f"\nResults saved to: {args.output_dir}")
+    print("Training completed successfully!")
 
 
 if __name__ == '__main__':

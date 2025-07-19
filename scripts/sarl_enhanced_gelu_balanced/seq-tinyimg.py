@@ -20,7 +20,7 @@ import time
 import copy
 from tqdm import tqdm
 
-from datasets.seq_cifar100 import SequentialCIFAR100
+from datasets.seq_tinyimagenet import SequentialTinyImagenet
 from models.sarl_enhanced_gelu_balanced import SARLEnhancedGeluBalanced, get_parser
 from utils.args import *
 from utils.best_args import *

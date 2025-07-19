@@ -21,7 +21,7 @@ import copy
 from tqdm import tqdm
 
 from datasets.seq_cifar100 import SequentialCIFAR100
-from models.sarl_enhanced_gelu_balanced import SARLEnhancedGeluBalanced, get_parser
+from models.sarl_enhanced_gelu_balanced_inference import SARLEnhancedGeluBalancedInference, get_parser
 from utils.args import *
 from utils.best_args import *
 from utils.conf import base_path
@@ -104,7 +104,7 @@ def main():
     dataset = get_dataset(args)
     backbone = dataset.get_backbone()
     loss = dataset.get_loss()
-    model = SARLEnhancedGeluBalanced(backbone, loss, args, dataset.get_transform())
+    model = SARLEnhancedGeluBalancedInference(backbone, loss, args, dataset.get_transform())
     model.net.to(model.device)
 
     if args.csv_log:
