@@ -14,7 +14,34 @@ def get_all_models():
 names = {}
 for model in get_all_models():
     mod = importlib.import_module('models.' + model)
-    class_name = {x.lower(): x for x in mod.__dir__()}[model.replace('_', '')]
+    
+    # Try to find the class name by removing underscores from model name
+    try:
+        class_name = {x.lower(): x for x in mod.__dir__()}[model.replace('_', '')]
+    except KeyError:
+        # If that fails, try to find a class that contains the model name
+        possible_classes = [x for x in mod.__dir__() if not x.startswith('_') and x[0].isupper()]
+        class_name = None
+        
+        # Look for exact match first
+        for cls in possible_classes:
+            if cls.lower() == model.replace('_', ''):
+                class_name = cls
+                break
+        
+        # If no exact match, look for partial match
+        if class_name is None:
+            for cls in possible_classes:
+                if model.replace('_', '').lower() in cls.lower():
+                    class_name = cls
+                    break
+        
+        # If still no match, use the first available class
+        if class_name is None and possible_classes:
+            class_name = possible_classes[0]
+        elif class_name is None:
+            raise KeyError(f"No suitable class found for model '{model}' in module '{mod.__name__}'")
+    
     names[model] = getattr(mod, class_name)
 
 

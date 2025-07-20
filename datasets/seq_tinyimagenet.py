@@ -34,11 +34,11 @@ class TinyImagenet(Dataset):
             if os.path.isdir(root) and len(os.listdir(root)) > 0:
                 print('Download not needed, files already on disk.')
             else:
-                from google_drive_downloader import GoogleDriveDownloader as gdd
+                from googledrivedownloader import download_file_from_google_drive
 
                 # https://drive.google.com/file/d/1Sy3ScMBr0F4se8VZ6TAwDYF-nNGAAdxj/view
                 print('Downloading dataset')
-                gdd.download_file_from_google_drive(
+                download_file_from_google_drive(
                     file_id='1Sy3ScMBr0F4se8VZ6TAwDYF-nNGAAdxj',
 
                     dest_path=os.path.join(root, 'tiny-imagenet-processed.zip'),
