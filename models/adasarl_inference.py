@@ -170,7 +170,7 @@ class BalancedBuffer(Buffer):
 
 
 def get_parser() -> ArgumentParser:
-    parser = ArgumentParser(description='Enhanced Semantic Aware Representation Learning with GELU and Balanced Sampling')
+    parser = ArgumentParser(description='Enhanced SARL with GELU, Balanced Sampling, and Inference-Only Prototypes')
     add_management_args(parser)
     add_experiment_args(parser)
     add_rehearsal_args(parser)
@@ -191,15 +191,21 @@ def get_parser() -> ArgumentParser:
     parser.add_argument('--warmup_epochs', type=int, default=5)
     parser.add_argument('--use_lr_scheduler', type=int, default=1)
     parser.add_argument('--lr_steps', type=int, nargs='*', default=[70, 90])
+    
+    # FIXED: Prototype Parameters (much more conservative)
+    parser.add_argument('--prototype_momentum', type=float, default=0.99, help='High momentum for stable updates')
+    parser.add_argument('--enable_inference_guidance', type=int, default=1, help='Enable prototype guidance during inference')
+    parser.add_argument('--guidance_weight', type=float, default=0.05, help='Weight for prototype guidance (very small)')
+    
     return parser
 
 
-class SARLEnhancedGeluBalanced(ContinualModel):
-    NAME = 'sarl_enhanced_gelu_balanced'
+class ADASARLInference(ContinualModel):
+    NAME = 'adasarl_inference'
     COMPATIBILITY = ['class-il', 'domain-il', 'task-il', 'general-continual']
 
     def __init__(self, backbone, loss, args, transform):
-        super(SARLEnhancedGeluBalanced, self).__init__(backbone, loss, args, transform)
+        super(ADASARLInference, self).__init__(backbone, loss, args, transform)
         
         # Initialize semantic components first
         self.semantic_similarity = SemanticSimilarity(args.num_feats).to(self.device)
@@ -237,13 +243,18 @@ class SARLEnhancedGeluBalanced(ContinualModel):
         self.global_step = 0
         self.lst_models = ['net']
 
-        # init Object Prototypes
+        # FIXED: Simple single prototypes with high momentum (no multi-centroid complexity)
         self.op = torch.zeros(num_classes_dict[args.dataset], args.num_feats).to(self.device)
         self.op_sum = torch.zeros(num_classes_dict[args.dataset], args.num_feats).to(self.device)
         self.sample_counts = torch.zeros(num_classes_dict[args.dataset]).to(self.device)
 
         self.running_op = torch.zeros(num_classes_dict[args.dataset], args.num_feats).to(self.device)
         self.running_sample_counts = torch.zeros(num_classes_dict[args.dataset]).to(self.device)
+
+        # FIXED: Conservative parameters
+        self.prototype_momentum = args.prototype_momentum  # 0.99 for stability
+        self.enable_inference_guidance = args.enable_inference_guidance
+        self.guidance_weight = args.guidance_weight  # 0.05 very small
 
         self.learned_classes = []
         self.flag = True
@@ -255,6 +266,33 @@ class SARLEnhancedGeluBalanced(ContinualModel):
         self.threshold_optimizer = Adam(self.adaptive_threshold.parameters(), lr=args.sim_lr)
         
         self.class_dict = class_dict[args.dataset]
+
+    def forward(self, x):
+        """FIXED: Only use prototypes during EVALUATION and with minimal weight"""
+        outputs, activations = self.net(x, return_activations=True)
+        
+        # CRITICAL FIX: Only during inference (eval mode) and with very small weight
+        if (not self.training and 
+            self.enable_inference_guidance and 
+            hasattr(self, 'op') and 
+            self.op.sum() != 0 and 
+            len(self.learned_classes) > 0):
+            
+            features = F.normalize(activations['feat'])
+            
+            # Simple cosine similarity to learned prototypes
+            prototype_similarities = torch.zeros(features.shape[0], len(self.learned_classes)).to(self.device)
+            for i, class_idx in enumerate(self.learned_classes):
+                prototype_similarities[:, i] = F.cosine_similarity(
+                    features, self.op[class_idx].unsqueeze(0), dim=1
+                )
+            
+            # Very conservative guidance (5% influence maximum)
+            if prototype_similarities.shape[1] == outputs.shape[1]:
+                guidance = prototype_similarities * 2.0  # Scale similarity to logit range
+                outputs = (1 - self.guidance_weight) * outputs + self.guidance_weight * guidance
+                
+        return outputs
 
     def compute_semantic_weights(self, new_labels, all_labels):
         """Compute soft semantic weights for all class pairs"""
@@ -431,7 +469,7 @@ class SARLEnhancedGeluBalanced(ContinualModel):
             buff_ce_loss = self.loss(buff_out, buf_labels)
             loss += reg_loss + buff_ce_loss
 
-            # Regularization loss on Class Prototypes
+            # FIXED: Original prototype regularization (no complex multi-centroid)
             if self.current_task > 0:
                 buff_feats = F.normalize(buff_feats)
                 dist = 0
@@ -448,6 +486,9 @@ class SARLEnhancedGeluBalanced(ContinualModel):
                 self.writer.add_scalar(f'Task {self.current_task}/buff_ce_loss', buff_ce_loss.item(), self.iteration)
 
         outputs, activations = self.net(inputs, return_activations=True)
+        current_features = activations['feat']
+
+        # REMOVED: No prototype guidance during training - this was the main issue!
 
         if self.epoch > self.args.warmup_epochs and self.current_task > 0:
             # Update semantic similarity network
@@ -519,11 +560,10 @@ class SARLEnhancedGeluBalanced(ContinualModel):
         self.flag = True
         self.net.eval()
 
-        # Calculate the Class Prototypes and Covariance Matrices using Working Model
+        # UNCHANGED: Original prototype calculation (simplified, no complex clustering)
         if self.epoch >= self.args.warmup_epochs and self.eval_prototypes and self.current_task > 0:
             print('!' * 30)
-            print('Evaluating Prototypes for the New Classes')
-            
+            print('Evaluating Fixed Prototypes for the New Classes')
             # Calculate Class Prototypes
             X = []
             Y = []
@@ -547,9 +587,17 @@ class SARLEnhancedGeluBalanced(ContinualModel):
             X = np.concatenate(X, axis=0)
             Y = np.concatenate(Y, axis=0)
 
-            # Take average feats
+            # FIXED: High momentum updates for stability
             for class_label in np.unique(Y):
-                self.running_op[class_label] = self.running_op[class_label] / self.running_sample_counts[class_label]
+                new_prototype = self.running_op[class_label] / self.running_sample_counts[class_label]
+
+                if class_label in self.learned_classes:
+                    # High momentum update for existing prototypes
+                    self.op[class_label] = (self.prototype_momentum * self.op[class_label] + 
+                                          (1 - self.prototype_momentum) * new_prototype)
+                else:
+                    # Direct assignment for new classes
+                    self.op[class_label] = new_prototype
 
             # Evaluate semantic relationships using learned similarity
             new_labels = [i for i in np.unique(Y) if i not in self.learned_classes]
@@ -614,7 +662,9 @@ class SARLEnhancedGeluBalanced(ContinualModel):
         for data, label, logits, index in buff_data_loader:
             out_net = self.net(data)
 
-        # Calculate Class Prototypes
+        # =====================================
+        # FIXED: Simple prototype calculation with high momentum
+        # =====================================
         self.net.eval()
         X = []
         Y = []
@@ -638,11 +688,20 @@ class SARLEnhancedGeluBalanced(ContinualModel):
         X = np.concatenate(X)
         Y = np.concatenate(Y)
 
-        # Take average feats
+        # FIXED: Simple, stable prototype updates
         for class_label in np.unique(Y):
             if class_label not in self.learned_classes:
                 self.learned_classes.append(class_label)
-            self.op[class_label] = self.op_sum[class_label] / self.sample_counts[class_label]
+            
+            # Simple average (no complex clustering)
+            new_prototype = self.op_sum[class_label] / self.sample_counts[class_label]
+            
+            # High momentum for stability
+            if hasattr(self, 'op') and self.op[class_label].sum() != 0:
+                self.op[class_label] = (self.prototype_momentum * self.op[class_label] + 
+                                      (1 - self.prototype_momentum) * new_prototype)
+            else:
+                self.op[class_label] = new_prototype
 
         # Update buffer with prototypes for balanced sampling
         if isinstance(self.buffer, BalancedBuffer):
@@ -652,7 +711,7 @@ class SARLEnhancedGeluBalanced(ContinualModel):
             model_dir = os.path.join(self.args.output_dir, "task_models", dataset.NAME, self.args.experiment_id)
             os.makedirs(model_dir, exist_ok=True)
             torch.save(self.net, os.path.join(model_dir, f'task{self.current_task}'))
-            torch.save(self.op, os.path.join(model_dir, f'object_prototypes.pth'))
+            torch.save(self.op, os.path.join(model_dir, f'fixed_prototypes.pth'))
             torch.save(self.semantic_similarity.state_dict(), os.path.join(model_dir, f'semantic_similarity.pth'))
             torch.save(self.adaptive_threshold.state_dict(), os.path.join(model_dir, f'adaptive_threshold.pth'))
 

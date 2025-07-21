@@ -1,5 +1,6 @@
-import os
+#!/usr/bin/env python3
 
+import os
 
 best_params = {
     200: {
@@ -7,38 +8,49 @@ best_params = {
         'alpha': 0.2,
         'beta': 1,
         'op_weight': 0.2,
-        'sim_thresh': 0.8,
         'sm_weight': 0.01,
-        'kw': '0.9 0.9 0.9 0.9',
+        'sim_lr': 0.001,
         'lr': 0.03,
         'minibatch_size': 32,
         'batch_size': 32,
         'n_epochs': 100,
         'lr_steps': '70 90',
-        'warmup_epochs': 3
+        'warmup_epochs': 3,
+        'apply_gelu': '1 1 1 1',
+        'num_feats': 512,
+        'use_balanced_sampling': 1,
+        'balance_weight': 1.0,
+        'prototype_momentum': 0.99,
+        'enable_inference_guidance': 1,
+        'guidance_weight': 0.05
     },
     500: {
         'idt': 'v1',
         'alpha': 0.5,
         'beta': 1,
         'op_weight': 0.5,
-        'sim_thresh': 0.8,
         'sm_weight': 0.01,
-        'kw': '0.9 0.9 0.9 0.9',
+        'sim_lr': 0.001,
         'lr': 0.03,
         'minibatch_size': 32,
         'batch_size': 32,
         'n_epochs': 100,
         'lr_steps': '70 90',
-        'warmup_epochs': 3
+        'warmup_epochs': 3,
+        'apply_gelu': '1 1 1 1',
+        'num_feats': 512,
+        'use_balanced_sampling': 1,
+        'balance_weight': 1.0,
+        'prototype_momentum': 0.99,
+        'enable_inference_guidance': 1,
+        'guidance_weight': 0.05
     },
 }
-
 
 lst_seed = [1, 3, 5]
 lst_buffer_size = [200, 500]
 count = 0
-output_dir = "experiments/sarl"
+output_dir = "experiments/adasarl"
 save_model = 0  # set to 1 to save the final model
 save_interim = 0  # set to 1 to save intermediate model state and running params
 device = 'cuda'
@@ -46,23 +58,27 @@ device = 'cuda'
 for seed in lst_seed:
     for buffer_size in lst_buffer_size:
         params = best_params[buffer_size]
-        exp_id = f"sarl-tinyimg-{buffer_size}-param-{params['idt']}-s-{seed}"
+        exp_id = f"adasarl-tinyimg-{buffer_size}-param-{params['idt']}-s-{seed}"
         job_args = f"python main.py  \
             --experiment_id {exp_id} \
-            --model sarl \
-            --dataset seq-tinyimg \
-            --kw {params['kw']} \
+            --model adasarl \
+            --dataset seq-cifar100 \
             --alpha {params['alpha']} \
             --beta {params['beta']} \
             --op_weight {params['op_weight']} \
-            --sim_thresh {params['sim_thresh']} \
             --sm_weight {params['sm_weight']} \
+            --sim_lr {params['sim_lr']} \
             --buffer_size {buffer_size} \
             --batch_size {params['batch_size']} \
             --minibatch_size {params['minibatch_size']} \
             --lr {params['lr']} \
             --lr_steps {params['lr_steps']} \
             --n_epochs {params['n_epochs']} \
+            --warmup_epochs {params['warmup_epochs']} \
+            --apply_gelu {params['apply_gelu']} \
+            --num_feats {params['num_feats']} \
+            --use_balanced_sampling {params['use_balanced_sampling']} \
+            --balance_weight {params['balance_weight']} \
             --output_dir {output_dir} \
             --csv_log \
             --seed {seed} \
@@ -73,4 +89,4 @@ for seed in lst_seed:
         count += 1
         os.system(job_args)
 
-print('%s jobs counted' % count)
+print('%s jobs counted' % count) 
