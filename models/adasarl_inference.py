@@ -194,7 +194,7 @@ def get_parser() -> ArgumentParser:
     
     # FIXED: Prototype Parameters (much more conservative)
     parser.add_argument('--prototype_momentum', type=float, default=0.99, help='High momentum for stable updates')
-    parser.add_argument('--enable_inference_guidance', type=int, default=1, help='Enable prototype guidance during inference')
+    parser.add_argument('--enable_inference_guidance', type=float, default=1, help='Enable prototype guidance during inference')
     parser.add_argument('--guidance_weight', type=float, default=0.05, help='Weight for prototype guidance (very small)')
     
     return parser
