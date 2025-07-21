@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Enhanced SARL with GELU activation and Balanced Instance Sampling for Sequential CIFAR-10
-This script defines a grid search for hyperparameters in the sarl_enhanced_gelu_balanced model
+Enhanced SARL with GELU activation, Balanced Instance Sampling, and Inference-Only Prototypes for Sequential CIFAR-10
+This script defines a grid search for hyperparameters in the sarl_enhanced_gelu_balanced_inference model
 """
 import os
 
 best_params = {
     200: [
         {
-            'idt': f'gelu_balanced_v1_buf200_alpha{a}_beta{b}_op{op}_sm{sm}_lr{lr}_simlr{slr}_bs{bs}_mb{mb}_ep{ep}_warm{w}_gelu{g.replace(" ", "-")}_feat{f}_bw{bw}',
+            'idt': f'adasarl_inference_v1_buf200_alpha{a}_beta{b}_op{op}_sm{sm}_lr{lr}_simlr{slr}_bs{bs}_mb{mb}_ep{ep}_warm{w}_gelu{g.replace(" ", "-")}_feat{f}_bw{bw}_pm{pm}_eg{eg}_gw{gw}',
             'alpha': a,
             'beta': b,
             'op_weight': op,
@@ -24,7 +24,10 @@ best_params = {
             'num_feats': f,
             'use_lr_scheduler': 1,
             'use_balanced_sampling': 1,
-            'balance_weight': bw
+            'balance_weight': bw,
+            'prototype_momentum': pm,
+            'enable_inference_guidance': eg,
+            'guidance_weight': gw
         }
         for a in [0.5]
         for b in [1.0]
@@ -39,10 +42,13 @@ best_params = {
         for g in ['1 1 1 1']
         for f in [512, 1024]
         for bw in [1.0, 2.0]
+        for pm in [0.99]  # High momentum for stability
+        for eg in [1]     # Enable inference guidance
+        for gw in [0.05, 0.1]  # Very small guidance weight
     ],
     500: [
         {
-            'idt': f'gelu_balanced_v1_buf500_alpha{a}_beta{b}_op{op}_sm{sm}_lr{lr}_simlr{slr}_bs{bs}_mb{mb}_ep{ep}_warm{w}_gelu{g.replace(" ", "-")}_feat{f}_bw{bw}',
+            'idt': f'adasarl_inference_v1_buf500_alpha{a}_beta{b}_op{op}_sm{sm}_lr{lr}_simlr{slr}_bs{bs}_mb{mb}_ep{ep}_warm{w}_gelu{g.replace(" ", "-")}_feat{f}_bw{bw}_pm{pm}_eg{eg}_gw{gw}',
             'alpha': a,
             'beta': b,
             'op_weight': op,
@@ -58,7 +64,10 @@ best_params = {
             'num_feats': f,
             'use_lr_scheduler': 1,
             'use_balanced_sampling': 1,
-            'balance_weight': bw
+            'balance_weight': bw,
+            'prototype_momentum': pm,
+            'enable_inference_guidance': eg,
+            'guidance_weight': gw
         }
         for a in [0.2]
         for b in [1.0]
@@ -73,25 +82,28 @@ best_params = {
         for g in ['1 1 1 1']
         for f in [512, 1024]
         for bw in [1.0, 2.0]
+        for pm in [0.99]  # High momentum for stability
+        for eg in [1]     # Enable inference guidance
+        for gw in [0.05, 0.1]  # Very small guidance weight
     ],
 }
 
 lst_seed = [1, 3, 5]
 lst_buffer_size = [200, 500]
 count = 0
-output_dir = "experiments/sarl_enhanced_gelu_balanced"
+output_dir = "experiments/adasarl_inference"
 save_model = 0  # Set to 1 to save the final model
 save_interim = 0  # Set to 1 to save intermediate model state and running params
 device = 'cuda'
 
-# Run balanced sampling experiments
+# Run balanced sampling experiments with inference-only prototypes
 for seed in lst_seed:
     for buffer_size in lst_buffer_size:
         for params in best_params[buffer_size]:
-            exp_id = f"sarl-enhanced-gelu-balanced-cifar10-{buffer_size}-param-{params['idt']}-s-{seed}"
+            exp_id = f"adasarl_inference-cifar10-{buffer_size}-param-{params['idt']}-s-{seed}"
             job_args = f"python main.py  \
                 --experiment_id \"{exp_id}\" \
-                --model sarl_enhanced_gelu_balanced \
+                --model adasarl_inference \
                 --dataset seq-cifar10 \
                 --alpha {params['alpha']} \
                 --beta {params['beta']} \
@@ -110,6 +122,9 @@ for seed in lst_seed:
                 --use_lr_scheduler {params['use_lr_scheduler']} \
                 --use_balanced_sampling {params['use_balanced_sampling']} \
                 --balance_weight {params['balance_weight']} \
+                --prototype_momentum {params['prototype_momentum']} \
+                --enable_inference_guidance {params['enable_inference_guidance']} \
+                --guidance_weight {params['guidance_weight']} \
                 --output_dir \"{output_dir}\" \
                 --csv_log \
                 --seed {seed} \
@@ -120,4 +135,4 @@ for seed in lst_seed:
             count += 1
             os.system(job_args)
 
-print(f'{count} jobs counted')
+print(f'{count} jobs counted') 
