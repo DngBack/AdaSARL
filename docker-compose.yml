@@ -1,0 +1,50 @@
+version: "3.8"
+
+services:
+  adasarl:
+    build: .
+    container_name: adasarl-experiment
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+      - PYTHONPATH=/workspace/adasarl
+    volumes:
+      # Mount the codebase for development
+      - .:/workspace/adasarl
+      # Mount data directory
+      - ./data:/workspace/adasarl/data
+      # Mount outputs for persistence
+      - ./outputs:/workspace/adasarl/outputs
+      # Mount logs for monitoring
+      - ./logs:/workspace/adasarl/logs
+      # Mount checkpoints for model saving
+      - ./checkpoints:/workspace/adasarl/checkpoints
+    ports:
+      # TensorBoard
+      - "6006:6006"
+      # Jupyter Notebook (optional)
+      - "8888:8888"
+    working_dir: /workspace/adasarl
+    command: bash
+    tty: true
+    stdin_open: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # Optional: TensorBoard service for monitoring
+  tensorboard:
+    build: .
+    container_name: adasarl-tensorboard
+    command: tensorboard --logdir=/workspace/adasarl/outputs --host=0.0.0.0 --port=6006
+    ports:
+      - "6006:6006"
+    volumes:
+      - ./outputs:/workspace/adasarl/outputs
+    depends_on:
+      - adasarl
