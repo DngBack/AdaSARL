@@ -84,6 +84,9 @@ save_model = 0  # Set to 1 to save the final model
 save_interim = 0  # Set to 1 to save intermediate model state and running params
 device = 'cuda'
 
+# Ensure output directory exists
+os.makedirs(output_dir, exist_ok=True)
+
 # Run balanced sampling experiments
 for seed in lst_seed:
     for buffer_size in lst_buffer_size:
@@ -102,10 +105,10 @@ for seed in lst_seed:
                 --batch_size {params['batch_size']} \
                 --minibatch_size {params['minibatch_size']} \
                 --lr {params['lr']} \
-                --lr_steps \{params['lr_steps']}\ \
+                --lr_steps '{params['lr_steps']}' \
                 --n_epochs {params['n_epochs']} \
                 --warmup_epochs {params['warmup_epochs']} \
-                --apply_gelu \{params['apply_gelu']}\ \
+                --apply_gelu '{params['apply_gelu']}' \
                 --num_feats {params['num_feats']} \
                 --use_lr_scheduler {params['use_lr_scheduler']} \
                 --use_balanced_sampling {params['use_balanced_sampling']} \
@@ -118,6 +121,11 @@ for seed in lst_seed:
                 --save_interim {save_interim} \
                 "
             count += 1
-            os.system(job_args)
+            print(f"Running experiment {count}: {exp_id}")
+            result = os.system(job_args)
+            if result != 0:
+                print(f"Warning: Experiment {exp_id} failed with return code {result}")
+            else:
+                print(f"Completed experiment {count}: {exp_id}")
 
 print(f'{count} jobs counted')

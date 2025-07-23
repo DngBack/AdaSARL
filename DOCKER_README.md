@@ -39,7 +39,160 @@ This will:
 - Test AdaSARL on CIFAR-10 (2 epochs)
 - Verify model imports work correctly
 
-### Run AdaSARL Inference (Recommended)
+### 🎯 Complete Experiment Suite
+
+#### Run All Experiments (Recommended for Full Results)
+
+```bash
+# Run all AdaSARL and AdaSARL Inference experiments
+./scripts/docker/run_all_experiments.sh
+
+# Run only AdaSARL experiments
+./scripts/docker/run_all_experiments.sh --adasarl-only
+
+# Run only AdaSARL Inference experiments
+./scripts/docker/run_all_experiments.sh --inference-only
+```
+
+**⚠️ Time Requirements:**
+- **Total experiments**: ~144 experiments (6 experiment types × 3 datasets × 3 seeds × ~2-4 hyperparameter combinations each)
+- **Expected time**: 2-7 days depending on hardware
+- **GPU memory**: Requires ~8GB+ GPU memory
+
+#### Individual Experiment Types
+
+#### � Output Structure
+
+After running experiments, your output directory will be organized as follows:
+
+```
+outputs/
+├── experiments/
+│   ├── adasarl/                           # AdaSARL experiment results
+│   │   ├── adasarl-cifar10-200-param-*-s-1/
+│   │   ├── adasarl-cifar10-200-param-*-s-3/
+│   │   ├── adasarl-cifar10-200-param-*-s-5/
+│   │   ├── adasarl-cifar10-500-param-*-s-*/
+│   │   ├── adasarl-cifar100-*-s-*/
+│   │   └── adasarl-tinyimg-*-s-*/
+│   └── adasarl_inference/                 # AdaSARL Inference experiment results
+│       ├── adasarl_inference-cifar10-200-param-*-s-1/
+│       ├── adasarl_inference-cifar10-200-param-*-s-3/
+│       ├── adasarl_inference-cifar10-200-param-*-s-5/
+│       └── ... (similar structure)
+├── logs/                                  # Training logs
+└── tensorboard/                          # TensorBoard logs
+```
+
+Each experiment directory contains:
+- `results.csv`: Detailed metrics for each task
+- `model_final.pth`: Final trained model (if save_model=1)
+- `config.json`: Experiment configuration
+- TensorBoard logs for visualization
+
+### 🔬 Experiment Details
+
+#### Hyperparameter Grid Search
+
+**AdaSARL Experiments** test combinations of:
+- `alpha`: [0.5] (buffer_size=200), [0.2] (buffer_size=500)
+- `beta`: [1.0]
+- `op_weight`: [0.5, 0.7]
+- `sm_weight`: [0.01, 0.05]
+- `num_feats`: [512, 1024]
+- `balance_weight`: [1.0, 2.0]
+- Buffer sizes: [200, 500]
+- Seeds: [1, 3, 5]
+
+**AdaSARL Inference Experiments** use similar parameters with:
+- Inference-only prototype guidance
+- Conservative guidance weights
+- High momentum updates
+
+#### Expected Results
+
+**CIFAR-10**: Higher accuracy due to simpler 10-class classification
+**CIFAR-100**: More challenging 100-class classification
+**TinyImageNet**: Most complex with 200 classes and higher resolution
+
+**Metrics tracked**:
+- Accuracy after each task
+- Average accuracy across all tasks
+- Forgetting measures
+- Training time per task
+
+## 📊 Advanced Usage
+
+These experiments test the full AdaSARL model with GELU activation and balanced sampling:
+
+```bash
+# CIFAR-10 Grid Search (24 experiments: 3 seeds × 2 buffer sizes × 4 param combinations)
+./scripts/docker/run_seq_cifar10.sh
+
+# CIFAR-100 Grid Search (24 experiments: 3 seeds × 2 buffer sizes × 4 param combinations)
+./scripts/docker/run_seq_cifar100.sh
+
+# TinyImageNet Grid Search (24 experiments: 3 seeds × 2 buffer sizes × 4 param combinations)
+./scripts/docker/run_seq_tinyimg.sh
+```
+
+**AdaSARL Features:**
+- GELU activation functions
+- Balanced instance sampling
+- Multiple buffer sizes (200, 500)
+- Hyperparameter grid search for alpha, beta, op_weight, sm_weight
+- Learning rate scheduling with warmup
+
+### 🔍 AdaSARL Inference Grid Search Experiments
+
+These experiments test AdaSARL with inference-only prototype guidance:
+
+```bash
+# CIFAR-10 Inference Grid Search (24 experiments: 3 seeds × 2 buffer sizes × 4 param combinations)
+./scripts/docker/run_inference_seq_cifar10.sh
+
+# CIFAR-100 Inference Grid Search (24 experiments: 3 seeds × 2 buffer sizes × 4 param combinations)
+./scripts/docker/run_inference_seq_cifar100.sh
+
+# TinyImageNet Inference Grid Search (24 experiments: 3 seeds × 2 buffer sizes × 4 param combinations)
+./scripts/docker/run_inference_seq_tinyimg.sh
+```
+
+**AdaSARL Inference Features:**
+- Prototype guidance only during evaluation (not training)
+- Conservative guidance weights (0.05-0.1)
+- High momentum prototype updates (0.99)
+- All other AdaSARL features included
+
+### 📈 Monitoring Experiments
+
+#### Real-time Monitoring with TensorBoard
+
+```bash
+# Start TensorBoard for monitoring (run in separate terminal)
+docker run --rm -p 6006:6006 \
+    -v $(pwd)/outputs:/workspace/outputs \
+    adasarl:latest \
+    tensorboard --logdir=/workspace/outputs --host=0.0.0.0
+
+# Then visit http://localhost:6006 in your browser
+```
+
+#### Check Progress
+
+```bash
+# Check running experiments
+docker ps
+
+# View logs of a running experiment
+docker logs <container_name>
+
+# Check output directories
+ls -la outputs/experiments/adasarl/
+ls -la outputs/experiments/adasarl_inference/
+```
+
+### Run AdaSARL Inference (Legacy Individual Runs)
 
 ```bash
 # Basic run on CIFAR-10
@@ -191,40 +344,122 @@ AdaSARL/
 
 ### Common Issues
 
-1. **Docker not running**
+#### GPU Not Detected
 
-   ```bash
-   # Start Docker Desktop or Docker service
-   sudo systemctl start docker  # Linux
-   # Or start Docker Desktop on Windows/Mac
-   ```
+```bash
+# Check if NVIDIA Docker is properly installed
+docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi
 
-2. **NVIDIA Docker not available**
+# If fails, install nvidia-container-toolkit
+sudo apt-get update
+sudo apt-get install -y nvidia-container-toolkit
+sudo systemctl restart docker
+```
 
-   ```bash
-   # Install NVIDIA Docker runtime
-   # Follow instructions at: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
-   ```
+#### Out of Memory Errors
 
-3. **Permission denied**
+```bash
+# Monitor GPU memory usage:
+watch -n 1 nvidia-smi
 
-   ```bash
-   # Make scripts executable
-   chmod +x scripts/docker/*.sh
-   ```
+# Reduce batch size by editing the experiment scripts
+# Or use smaller buffer sizes (200 instead of 500)
+# Example: Edit scripts/adasarl/seq-cifar10.py to use smaller batch_size
+```
 
-4. **Out of memory**
+#### Experiment Failures
 
-   ```bash
-   # Reduce batch size or buffer size
-   ./scripts/docker/run_adasarl_inference.sh -s 16 -b 100
-   ```
+```bash
+# Check experiment logs
+docker logs <container_name>
 
-5. **Port already in use**
-   ```bash
-   # Use different port for TensorBoard
-   ./scripts/docker/start_tensorboard.sh -p 6007
-   ```
+# Check if output directory has write permissions
+sudo chmod -R 755 outputs/
+
+# Clean up failed experiments and free space
+docker system prune -f
+docker volume prune -f
+```
+
+#### Slow Performance
+
+```bash
+# Use SSD storage for better I/O performance
+# Ensure adequate RAM (16GB+ recommended)
+# Monitor system resources:
+htop
+
+# Run fewer experiments in parallel
+# Use smaller datasets for testing first
+```
+
+#### Docker Issues
+
+```bash
+# Permission issues
+sudo chown -R $USER:$USER outputs/
+
+# Port already in use
+docker ps
+docker stop <container_name>
+
+# Docker not running
+sudo systemctl start docker  # Linux
+# Or start Docker Desktop on Windows/Mac
+```
+
+### 💡 Best Practices
+
+#### Before Running Large Experiments
+
+1. **Test with quick_test.sh first** - Verify setup works
+2. **Ensure adequate disk space** - 50GB+ for full experiments
+3. **Run single experiment first** - Test individual components
+4. **Set up monitoring** - Use TensorBoard and system monitoring
+5. **Consider running in batches** - Better resource management
+
+#### Resource Management
+
+```bash
+# Run experiments sequentially for better resource control
+./scripts/docker/run_seq_cifar10.sh
+# Wait for completion, then:
+./scripts/docker/run_seq_cifar100.sh
+
+# Monitor disk usage regularly
+df -h
+du -sh outputs/
+
+# Clean up intermediate files if needed
+docker system prune -f
+```
+
+#### Data Backup and Analysis
+
+```bash
+# Backup important results
+tar -czf adasarl_results_$(date +%Y%m%d).tar.gz outputs/experiments/
+
+# Example result analysis
+python -c "
+import pandas as pd
+import glob
+
+# Compare buffer sizes for CIFAR-10
+files = glob.glob('outputs/experiments/adasarl/adasarl-cifar10-**/results.csv', recursive=True)
+results = []
+for f in files:
+    df = pd.read_csv(f)
+    buffer_size = 200 if 'buf200' in f else 500
+    df['buffer_size'] = buffer_size
+    results.append(df)
+
+if results:
+    combined = pd.concat(results)
+    print('Average accuracy by buffer size:')
+    print(combined.groupby('buffer_size')['accuracy'].mean())
+"
+```
 
 ### Debug Commands
 
@@ -286,7 +521,47 @@ jobs:
         run: ./scripts/docker/quick_test.sh
 ```
 
-## 📚 Additional Resources
+## � Available Docker Scripts
+
+### 🚀 Master Scripts
+
+| Script | Description | Usage |
+|--------|-------------|-------|
+| `run_all_experiments.sh` | Run all AdaSARL and Inference experiments | `./scripts/docker/run_all_experiments.sh` |
+| `run_all_experiments.sh --adasarl-only` | Run only AdaSARL experiments | `./scripts/docker/run_all_experiments.sh --adasarl-only` |
+| `run_all_experiments.sh --inference-only` | Run only Inference experiments | `./scripts/docker/run_all_experiments.sh --inference-only` |
+
+### 🔬 AdaSARL Experiments (Full Training)
+
+| Script | Dataset | Experiments | Description |
+|--------|---------|-------------|-------------|
+| `run_seq_cifar10.sh` | CIFAR-10 | 24 (3×2×4) | GELU + Balanced Sampling |
+| `run_seq_cifar100.sh` | CIFAR-100 | 24 (3×2×4) | GELU + Balanced Sampling |
+| `run_seq_tinyimg.sh` | TinyImageNet | 24 (3×2×4) | GELU + Balanced Sampling |
+
+### 🔍 AdaSARL Inference Experiments (Inference-Only Prototypes)
+
+| Script | Dataset | Experiments | Description |
+|--------|---------|-------------|-------------|
+| `run_inference_seq_cifar10.sh` | CIFAR-10 | 24 (3×2×4) | Conservative Prototype Guidance |
+| `run_inference_seq_cifar100.sh` | CIFAR-100 | 24 (3×2×4) | Conservative Prototype Guidance |
+| `run_inference_seq_tinyimg.sh` | TinyImageNet | 24 (3×2×4) | Conservative Prototype Guidance |
+
+### 🧪 Utility Scripts
+
+| Script | Description | Usage |
+|--------|-------------|-------|
+| `quick_test.sh` | Quick verification test | `./scripts/docker/quick_test.sh` |
+| `start_tensorboard.sh` | Start TensorBoard monitoring | `./scripts/docker/start_tensorboard.sh` |
+
+**Experiment Count Breakdown:**
+- **3 seeds**: [1, 3, 5] for statistical significance
+- **2 buffer sizes**: [200, 500] for different memory constraints  
+- **4 hyperparameter combinations**: Different alpha/beta/op_weight/sm_weight/num_feats/balance_weight combinations
+- **Total per dataset**: 24 experiments
+- **Total for all experiments**: 144 experiments (6 scripts × 24 each)
+
+## �📚 Additional Resources
 
 - [Docker Documentation](https://docs.docker.com/)
 - [NVIDIA Docker](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/)
