@@ -56,9 +56,9 @@ class AdaptiveThreshold(nn.Module):
 
 
 class BalancedBuffer(Buffer):
-    """Enhanced buffer with balanced instance sampling based on semantic groups"""
+    """Enhanced buffer with balanced instance sampling based on semantic groups and class-level reservoir"""
     
-    def __init__(self, buffer_size, device, semantic_similarity, adaptive_threshold, num_feats):
+    def __init__(self, buffer_size, device, semantic_similarity, adaptive_threshold, num_feats, dataset_name=None, min_samples_per_class=1):
         super().__init__(buffer_size, device)
         self.semantic_similarity = semantic_similarity
         self.adaptive_threshold = adaptive_threshold
@@ -68,105 +68,357 @@ class BalancedBuffer(Buffer):
         self.sample_features = {}  # Store features for semantic computation
         self.epsilon = 1e-6        # Small constant to prevent division by zero
         
-    def add_data(self, examples, labels, logits, features=None):
-        """Add data to buffer with semantic group tracking"""
-        super().add_data(examples, labels, logits)
+        # Hybrid Class-Semantic Balanced Sampling components
+        self.min_samples_per_class = min_samples_per_class
+        self.dataset_name = dataset_name
+        self.class_reservoirs = {}  # Per-class reservoir sampling buffers
+        self.class_counts = {}      # Track samples per class
+        self.class_indices = {}     # Track indices for each class
         
-        # Store features for semantic computation
+        # Calculate per-class buffer allocation
+        if dataset_name and dataset_name in num_classes_dict:
+            num_classes = num_classes_dict[dataset_name]
+            self.slots_per_class = max(min_samples_per_class, buffer_size // num_classes)
+        else:
+            self.slots_per_class = min_samples_per_class
+        
+    def add_data(self, examples, labels, logits, features=None, task_labels=None, activations=None, contexts=None, timestamps=None):
+        """Add data to buffer with semantic group tracking and per-class reservoir sampling"""
+        # First, perform per-class reservoir sampling
+        for i, (example, label, logit) in enumerate(zip(examples, labels, logits)):
+            class_id = label.item()
+            
+            # Initialize class reservoir if needed
+            if class_id not in self.class_reservoirs:
+                self.class_reservoirs[class_id] = {
+                    'examples': [],
+                    'labels': [],
+                    'logits': [],
+                    'features': [],
+                    'indices': []
+                }
+                self.class_counts[class_id] = 0
+                self.class_indices[class_id] = []
+            
+            # Reservoir sampling per class
+            if len(self.class_reservoirs[class_id]['examples']) < self.slots_per_class:
+                # Add directly if reservoir not full
+                self.class_reservoirs[class_id]['examples'].append(example)
+                self.class_reservoirs[class_id]['labels'].append(label)
+                self.class_reservoirs[class_id]['logits'].append(logit)
+                if features is not None:
+                    self.class_reservoirs[class_id]['features'].append(features[i])
+                else:
+                    self.class_reservoirs[class_id]['features'].append(None)
+            else:
+                # Reservoir sampling: replace with probability 1/k
+                k = self.class_counts[class_id] + 1
+                if torch.rand(1).item() < (self.slots_per_class / k):
+                    replace_idx = torch.randint(0, self.slots_per_class, (1,)).item()
+                    self.class_reservoirs[class_id]['examples'][replace_idx] = example
+                    self.class_reservoirs[class_id]['labels'][replace_idx] = label
+                    self.class_reservoirs[class_id]['logits'][replace_idx] = logit
+                    if features is not None:
+                        self.class_reservoirs[class_id]['features'][replace_idx] = features[i]
+                    else:
+                        self.class_reservoirs[class_id]['features'][replace_idx] = None
+            
+            self.class_counts[class_id] += 1
+        
+        # Rebuild global buffer from class reservoirs
+        self._rebuild_global_buffer()
+        
+        # Store features for semantic computation and assign semantic groups
         if features is not None:
+            current_buffer_size = len(self.examples)
             for i, (example, label, logit) in enumerate(zip(examples, labels, logits)):
-                idx = len(self.examples) - len(examples) + i
-                self.sample_features[idx] = features[i].detach()
-                
-                # Assign semantic group based on learned similarity
-                if hasattr(self, 'op') and label.item() in self.op:
-                    prototype = self.op[label.item()]
-                    sim_score = self.semantic_similarity(features[i], prototype).item()
-                    group_id = self.adaptive_threshold(torch.tensor([sim_score])).item()
-                    
-                    if group_id not in self.semantic_groups:
-                        self.semantic_groups[group_id] = []
-                        self.group_counts[group_id] = 0
-                    
-                    self.semantic_groups[group_id].append(idx)
-                    self.group_counts[group_id] += 1
+                # Find the actual index in the rebuilt buffer
+                for idx in range(current_buffer_size):
+                    if torch.equal(self.examples[idx], example) and torch.equal(self.labels[idx], label):
+                        self.sample_features[idx] = features[i].detach()
+                        
+                        # Assign semantic group based on learned similarity
+                        if hasattr(self, 'op') and label.item() in self.op:
+                            prototype = self.op[label.item()]
+                            sim_score = self.semantic_similarity(features[i], prototype).item()
+                            group_id = self.adaptive_threshold(torch.tensor([sim_score])).item()
+                            
+                            if group_id not in self.semantic_groups:
+                                self.semantic_groups[group_id] = []
+                                self.group_counts[group_id] = 0
+                            
+                            self.semantic_groups[group_id].append(idx)
+                            self.group_counts[group_id] += 1
+                        break
+    
+    def _rebuild_global_buffer(self):
+        """Rebuild global buffer from class reservoirs"""
+        all_examples = []
+        all_labels = []
+        all_logits = []
+        
+        for class_id, reservoir in self.class_reservoirs.items():
+            all_examples.extend(reservoir['examples'])
+            all_labels.extend(reservoir['labels'])
+            all_logits.extend(reservoir['logits'])
+        
+        # Update parent class attributes
+        if all_examples:
+            self.examples = all_examples
+            self.labels = all_labels
+            self.logits = all_logits
+        else:
+            self.examples = []
+            self.labels = []
+            self.logits = []
     
     def get_balanced_data(self, minibatch_size, transform=None, op_prototypes=None):
-        """Get balanced data based on semantic group distribution"""
+        """Get balanced data using hybrid class-semantic sampling"""
         if self.is_empty():
             return None, None, None
         
-        # Compute semantic group balance scores
-        total_groups = len(self.group_counts) if self.group_counts else 1
-        balance_factors = {}
+        # Step 1: Ensure minimum samples per class (class-balanced phase)
+        class_samples = {}
+        remaining_slots = minibatch_size
         
-        for group_id, count in self.group_counts.items():
-            if count > 0:
-                balance_factors[group_id] = total_groups / count
-            else:
-                balance_factors[group_id] = 1.0
-        
-        # Calculate importance scores for each sample
-        importance_scores = []
-        valid_indices = []
-        
-        for idx in range(len(self.examples)):
-            if idx in self.sample_features and idx in self.labels:
-                label = self.labels[idx]
-                feature = self.sample_features[idx]
-                
-                # Find semantic group for this sample
-                group_id = 0  # Default group
-                for gid, indices in self.semantic_groups.items():
-                    if idx in indices:
-                        group_id = gid
-                        break
-                
-                # Compute semantic similarity to prototype
-                if op_prototypes is not None and label.item() in op_prototypes:
-                    prototype = op_prototypes[label.item()]
-                    sim_score = self.semantic_similarity(feature, prototype).item()
-                else:
-                    sim_score = 0.5  # Default similarity
-                
-                # Compute importance score with balance factor
-                balance_factor = balance_factors.get(group_id, 1.0)
-                importance = (1.0 / (sim_score + self.epsilon)) * balance_factor
-                
-                importance_scores.append(importance)
-                valid_indices.append(idx)
-        
-        if not valid_indices:
+        # Get available classes in buffer
+        available_classes = list(self.class_reservoirs.keys())
+        if not available_classes:
             # Fallback to uniform sampling
-            return super().get_data(minibatch_size, transform)
+            return self._fallback_uniform_sampling(minibatch_size, transform)
         
-        # Convert to tensor and normalize
-        importance_scores = torch.tensor(importance_scores, device=self.device)
-        importance_scores = importance_scores / importance_scores.sum()
+        # First, allocate minimum samples per class
+        min_samples_allocated = min(self.min_samples_per_class, minibatch_size // len(available_classes))
         
-        # Sample based on importance scores
-        num_samples = min(minibatch_size, len(valid_indices))
-        sampled_indices = torch.multinomial(importance_scores, num_samples, replacement=False)
+        for class_id in available_classes:
+            if remaining_slots <= 0:
+                break
+            
+            class_reservoir = self.class_reservoirs[class_id]
+            available_samples = len(class_reservoir['examples'])
+            
+            if available_samples > 0:
+                # Sample minimum required per class
+                num_samples = min(min_samples_allocated, available_samples, remaining_slots)
+                
+                # Random sampling from class reservoir
+                if available_samples > num_samples:
+                    sample_indices = torch.randperm(available_samples)[:num_samples]
+                else:
+                    sample_indices = torch.arange(available_samples)
+                
+                sampled_examples = [class_reservoir['examples'][i] for i in sample_indices]
+                sampled_labels = [class_reservoir['labels'][i] for i in sample_indices]
+                sampled_logits = [class_reservoir['logits'][i] for i in sample_indices]
+                
+                class_samples[class_id] = {
+                    'examples': sampled_examples,
+                    'labels': sampled_labels,
+                    'logits': sampled_logits,
+                    'count': len(sampled_examples)
+                }
+                
+                remaining_slots -= len(sampled_examples)
         
-        # Get sampled data
+        # Step 2: Fill remaining slots using semantic importance (semantic-guided phase)
+        if remaining_slots > 0 and op_prototypes is not None:
+            # Compute semantic importance scores for remaining samples
+            importance_scores = []
+            candidate_samples = []
+            
+            for class_id, class_reservoir in self.class_reservoirs.items():
+                # Skip samples already selected in class-balanced phase
+                already_selected = class_samples.get(class_id, {}).get('count', 0)
+                available_count = len(class_reservoir['examples'])
+                
+                if available_count > already_selected:
+                    # Consider remaining samples from this class
+                    for i in range(already_selected, min(available_count, already_selected + remaining_slots)):
+                        example = class_reservoir['examples'][i]
+                        label = class_reservoir['labels'][i]
+                        logit = class_reservoir['logits'][i]
+                        feature = class_reservoir['features'][i]
+                        
+                        if feature is not None and label.item() in op_prototypes:
+                            # Find semantic group for importance calculation
+                            group_id = 0  # Default group
+                            global_idx = self._find_global_index(example, label)
+                            
+                            if global_idx is not None:
+                                for gid, indices in self.semantic_groups.items():
+                                    if global_idx in indices:
+                                        group_id = gid
+                                        break
+                            
+                            # Compute semantic similarity to prototype
+                            prototype = op_prototypes[label.item()]
+                            sim_score = self.semantic_similarity(feature, prototype).item()
+                            
+                            # Compute balance factor with boost for underrepresented groups
+                            balance_factor = 1.0
+                            if group_id in self.group_counts:
+                                if self.group_counts[group_id] < 1:  # Boost underrepresented groups
+                                    balance_factor = 2.0
+                                else:
+                                    total_groups = len(self.group_counts)
+                                    balance_factor = total_groups / self.group_counts[group_id]
+                            
+                            # Compute importance score
+                            importance = (1.0 / (sim_score + self.epsilon)) * balance_factor
+                            
+                            importance_scores.append(importance)
+                            candidate_samples.append({
+                                'example': example,
+                                'label': label,
+                                'logit': logit,
+                                'class_id': class_id
+                            })
+            
+            # Sample based on importance scores for remaining slots
+            if candidate_samples and remaining_slots > 0:
+                importance_tensor = torch.tensor(importance_scores, device=self.device)
+                importance_tensor = importance_tensor / importance_tensor.sum()
+                
+                num_semantic_samples = min(remaining_slots, len(candidate_samples))
+                if num_semantic_samples > 0:
+                    sampled_indices = torch.multinomial(importance_tensor, num_semantic_samples, replacement=False)
+                    
+                    # Add semantically important samples to class_samples
+                    for idx in sampled_indices:
+                        sample = candidate_samples[idx]
+                        class_id = sample['class_id']
+                        
+                        if class_id not in class_samples:
+                            class_samples[class_id] = {
+                                'examples': [],
+                                'labels': [],
+                                'logits': [],
+                                'count': 0
+                            }
+                        
+                        class_samples[class_id]['examples'].append(sample['example'])
+                        class_samples[class_id]['labels'].append(sample['label'])
+                        class_samples[class_id]['logits'].append(sample['logit'])
+                        class_samples[class_id]['count'] += 1
+        
+        # Step 3: Combine all selected samples
         buf_examples = []
         buf_labels = []
         buf_logits = []
         
-        for idx in sampled_indices:
-            sample_idx = valid_indices[idx]
-            buf_examples.append(self.examples[sample_idx])
-            buf_labels.append(self.labels[sample_idx])
-            buf_logits.append(self.logits[sample_idx])
+        for class_id, samples in class_samples.items():
+            buf_examples.extend(samples['examples'])
+            buf_labels.extend(samples['labels'])
+            buf_logits.extend(samples['logits'])
         
+        if not buf_examples:
+            return None, None, None
+        
+        # Convert to tensors
         buf_examples = torch.stack(buf_examples)
         buf_labels = torch.stack(buf_labels)
         buf_logits = torch.stack(buf_logits)
         
         if transform is not None:
-            buf_examples = transform(buf_examples)
+            # Apply transform per image if batch
+            if buf_examples.dim() == 4:
+                buf_examples = torch.stack([transform(img) for img in buf_examples])
+            else:
+                buf_examples = transform(buf_examples)
+        # Move to device
+        buf_examples = buf_examples.to(self.device)
+        buf_labels = buf_labels.to(self.device)
+        buf_logits = buf_logits.to(self.device)
         
         return buf_examples, buf_labels, buf_logits
+    
+    def _find_global_index(self, example, label):
+        """Find global index of sample in buffer for semantic group lookup"""
+        for idx, (buf_example, buf_label) in enumerate(zip(self.examples, self.labels)):
+            if torch.equal(buf_example, example) and torch.equal(buf_label, label):
+                return idx
+        return None
+    
+    def _fallback_uniform_sampling(self, minibatch_size, transform=None):
+        """Fallback to uniform sampling when semantic info not available"""
+        if len(self.examples) == 0:
+            return None, None, None
+        
+        num_samples = min(minibatch_size, len(self.examples))
+        indices = torch.randperm(len(self.examples))[:num_samples]
+        
+        buf_examples = torch.stack([self.examples[i] for i in indices])
+        buf_labels = torch.stack([self.labels[i] for i in indices])
+        buf_logits = torch.stack([self.logits[i] for i in indices])
+        
+        if transform is not None:
+            if buf_examples.dim() == 4:
+                buf_examples = torch.stack([transform(img) for img in buf_examples])
+            else:
+                buf_examples = transform(buf_examples)
+        # Move to device
+        buf_examples = buf_examples.to(self.device)
+        buf_labels = buf_labels.to(self.device)
+        buf_logits = buf_logits.to(self.device)
+        
+        return buf_examples, buf_labels, buf_logits
+    
+    def update_prototypes(self, prototypes):
+        """Update prototypes for semantic similarity computation"""
+        self.op = prototypes
+    
+    def get_all_data(self, transform=None):
+        """Get all data from buffer, ensuring proper tensor format"""
+        if self.is_empty():
+            return torch.empty(0), torch.empty(0, dtype=torch.long), torch.empty(0)
+        
+        # Convert lists to tensors if needed
+        if isinstance(self.examples, list) and len(self.examples) > 0:
+            buf_examples = torch.stack(self.examples)
+        elif hasattr(self, 'examples') and self.examples is not None:
+            buf_examples = self.examples
+        else:
+            return torch.empty(0), torch.empty(0, dtype=torch.long), torch.empty(0)
+            
+        if isinstance(self.labels, list) and len(self.labels) > 0:
+            buf_labels = torch.stack(self.labels)
+        elif hasattr(self, 'labels') and self.labels is not None:
+            buf_labels = self.labels
+        else:
+            buf_labels = torch.empty(0, dtype=torch.long)
+            
+        if isinstance(self.logits, list) and len(self.logits) > 0:
+            buf_logits = torch.stack(self.logits)
+        elif hasattr(self, 'logits') and self.logits is not None:
+            buf_logits = self.logits
+        else:
+            buf_logits = torch.empty(0)
+        
+        if transform is not None and torch.is_tensor(buf_examples) and buf_examples.numel() > 0:
+            if buf_examples.dim() == 4:
+                buf_examples = torch.stack([transform(img) for img in buf_examples])
+            else:
+                buf_examples = transform(buf_examples)
+        
+        # Move tensors to the correct device
+        if torch.is_tensor(buf_examples) and buf_examples.numel() > 0:
+            buf_examples = buf_examples.to(self.device)
+        if torch.is_tensor(buf_labels) and buf_labels.numel() > 0:
+            buf_labels = buf_labels.to(self.device)
+        if torch.is_tensor(buf_logits) and buf_logits.numel() > 0:
+            buf_logits = buf_logits.to(self.device)
+        
+        return buf_examples, buf_labels, buf_logits
+    
+    def is_empty(self):
+        """Check if buffer is empty based on class reservoirs"""
+        if not hasattr(self, 'class_reservoirs'):
+            return True
+        
+        for reservoir in self.class_reservoirs.values():
+            if len(reservoir['examples']) > 0:
+                return False
+        return True
 
 
 def get_parser() -> ArgumentParser:
@@ -186,6 +438,10 @@ def get_parser() -> ArgumentParser:
     # Balanced Sampling params
     parser.add_argument('--use_balanced_sampling', type=int, default=1)
     parser.add_argument('--balance_weight', type=float, default=1.0)
+    parser.add_argument('--min_samples_per_class', type=int, default=1)  # New parameter
+    # Semantic Network Efficiency params
+    parser.add_argument('--semantic_update_freq', type=int, default=5)  # New: Update every N batches
+    parser.add_argument('--freeze_semantic_after_task', type=int, default=3)  # New: Freeze after task N
     # Experimental Args
     parser.add_argument('--save_interim', type=int, default=1)
     parser.add_argument('--warmup_epochs', type=int, default=5)
@@ -205,14 +461,16 @@ class ADASARL(ContinualModel):
         self.semantic_similarity = SemanticSimilarity(args.num_feats).to(self.device)
         self.adaptive_threshold = AdaptiveThreshold().to(self.device)
         
-        # Initialize balanced buffer
+        # Initialize balanced buffer with enhanced parameters
         if args.use_balanced_sampling:
             self.buffer = BalancedBuffer(
                 self.args.buffer_size, 
                 self.device, 
                 self.semantic_similarity, 
                 self.adaptive_threshold, 
-                args.num_feats
+                args.num_feats,
+                dataset_name=args.dataset,
+                min_samples_per_class=args.min_samples_per_class
             )
         else:
             self.buffer = Buffer(self.args.buffer_size, self.device)
@@ -253,6 +511,11 @@ class ADASARL(ContinualModel):
         self.semantic_weights = {}
         self.sim_optimizer = Adam(self.semantic_similarity.parameters(), lr=args.sim_lr)
         self.threshold_optimizer = Adam(self.adaptive_threshold.parameters(), lr=args.sim_lr)
+        
+        # Efficient semantic update parameters
+        self.semantic_update_freq = args.semantic_update_freq
+        self.freeze_semantic_after_task = args.freeze_semantic_after_task
+        self.semantic_frozen = False
         
         self.class_dict = class_dict[args.dataset]
 
@@ -450,8 +713,11 @@ class ADASARL(ContinualModel):
         outputs, activations = self.net(inputs, return_activations=True)
 
         if self.epoch > self.args.warmup_epochs and self.current_task > 0:
-            # Update semantic similarity network
-            self.update_semantic_similarity()
+            # Efficient Update: Only update semantic similarity network at specified frequency
+            if (self.global_step % self.semantic_update_freq == 0 and 
+                not self.semantic_frozen and 
+                self.current_task > 0):
+                self.update_semantic_similarity()
 
             outputs_old = self.net_old(inputs)
             loss += self.args.beta * F.mse_loss(outputs, outputs_old)
@@ -494,6 +760,9 @@ class ADASARL(ContinualModel):
 
         loss.backward()
         self.opt.step()
+        
+        # Increment global step for efficient semantic updates
+        self.global_step += 1
 
         # Add data to buffer with features for balanced sampling
         if self.args.use_balanced_sampling and isinstance(self.buffer, BalancedBuffer):
@@ -594,6 +863,14 @@ class ADASARL(ContinualModel):
         self.flag = True
         self.current_task += 1
         self.net.eval()
+        
+        # Freeze semantic similarity network after specified task for efficiency
+        if (self.current_task >= self.freeze_semantic_after_task and 
+            not self.semantic_frozen):
+            print(f"Freezing semantic similarity network after task {self.current_task}")
+            for p in self.semantic_similarity.parameters():
+                p.requires_grad = False
+            self.semantic_frozen = True
 
         # Save old model
         self.net_old = deepcopy(self.net)
@@ -605,14 +882,35 @@ class ADASARL(ContinualModel):
         else:
             buf_inputs, buf_labels, buf_logits = self.buffer.get_all_data(transform=self.transform)
         
-        buf_idx = torch.arange(0, len(buf_labels)).to(buf_labels.device)
+        # Handle case where buffer might be empty or return lists
+        is_empty = (buf_labels is None or 
+                   (isinstance(buf_labels, list) and len(buf_labels) == 0) or 
+                   (torch.is_tensor(buf_labels) and buf_labels.numel() == 0))
+        
+        if is_empty:
+            # Skip buffer processing if empty
+            pass
+        else:
+            # Ensure all tensors are properly formatted
+            if isinstance(buf_inputs, list):
+                buf_inputs = torch.stack(buf_inputs)
+            if isinstance(buf_labels, list):
+                buf_labels = torch.stack(buf_labels)
+            if isinstance(buf_logits, list):
+                buf_logits = torch.stack(buf_logits)
+            
+            # Move all tensors to correct device
+            buf_inputs = buf_inputs.to(self.device)
+            buf_labels = buf_labels.to(self.device)
+            buf_logits = buf_logits.to(self.device)
+            buf_idx = torch.arange(0, len(buf_labels)).to(self.device)
 
-        buff_dataset = torch.utils.data.TensorDataset(buf_inputs, buf_labels, buf_logits, buf_idx)
-        buff_data_loader = DataLoader(buff_dataset, batch_size=self.args.batch_size, shuffle=True, num_workers=0)
+            buff_dataset = torch.utils.data.TensorDataset(buf_inputs, buf_labels, buf_logits, buf_idx)
+            buff_data_loader = DataLoader(buff_dataset, batch_size=self.args.batch_size, shuffle=True, num_workers=0)
 
-        self.net.train()
-        for data, label, logits, index in buff_data_loader:
-            out_net = self.net(data)
+            self.net.train()
+            for data, label, logits, index in buff_data_loader:
+                out_net = self.net(data)
 
         # Calculate Class Prototypes
         self.net.eval()
@@ -646,7 +944,7 @@ class ADASARL(ContinualModel):
 
         # Update buffer with prototypes for balanced sampling
         if isinstance(self.buffer, BalancedBuffer):
-            self.buffer.op = self.op
+            self.buffer.update_prototypes(self.op)
 
         if self.args.save_interim:
             model_dir = os.path.join(self.args.output_dir, "task_models", dataset.NAME, self.args.experiment_id)
