@@ -15,7 +15,7 @@ best_params = {
         'batch_size': 32,
         'n_epochs': 50,
         'lr_steps': '35 45',
-        'warmup_epochs': 3,
+        'warmup_epochs': 5,
         'apply_gelu': '1 1 1 1',
         'num_feats': 512,
         'use_balanced_sampling': 1,
@@ -41,8 +41,8 @@ best_params = {
     },
 }
 
-lst_seed = [1, 3, 5]
-lst_buffer_size = [200, 500]
+lst_seed = [1]
+lst_buffer_size = [200]
 count = 0
 output_dir = "experiments/adasarl"
 save_model = 0  # set to 1 to save the final model
